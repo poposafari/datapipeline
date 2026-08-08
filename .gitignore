@@ -1,0 +1,17 @@
+# DuckDB 웨어하우스 — R2가 정본이므로 언제든 재구축 가능한 파생물
+*.duckdb
+*.duckdb.prev
+*.duckdb.wal
+*.wal
+
+# R2 자격증명 — 실물은 /srv/warehouse/secrets.sql (0600), 레포 밖
+secrets.sql
+
+# 픽스처 생성물 — gen.py 로 언제든 재생성되고, 기준일이 '오늘'이라
+# 커밋해두면 하루만 지나도 스캔 창 밖으로 밀려 무의미해진다.
+fixtures/out/
+fixtures/out-dirty/
+
+# 로컬 실행 산출물
+*.log
+.DS_Store
