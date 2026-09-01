@@ -1,0 +1,47 @@
+[Unit]
+# PopoSafari 대시보드 — 정적 파일 서버.
+#
+# bootstrap/install.sh 가 @REPO@ / @USER@ 를 치환해
+# /etc/systemd/system/poposafari-dashboard.service 로 설치한다.
+#
+# 왜 python3 -m http.server 인가:
+#   대시보드는 하루 1회 갱신되는 정적 JSON + HTML 이라 서버 로직이 없다.
+#   Node 를 안 들이기로 한 이상(Evidence.dev 대신 정적 생성) 추가 의존성 0 인
+#   이게 이 박스에 맞는다. nginx 를 이미 쓰고 있다면 거기에 붙여도 된다.
+#
+# ⚠️ 0.0.0.0 에 바인드하지 않는다. LAN/Tailscale 주소에만 뜬다.
+#    인증은 걸지 않는다 — 페이지에 집계값만 있고 account_id 조차 나가지 않는다.
+#    1인 가정 LAN 이라는 전제가 깨지면(공유기 포트포워딩 등) 이 판단을 다시 할 것.
+Description=PopoSafari dashboard (static)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=@REPO@/dashboard/public
+
+# install.sh 가 만드는 /etc/default/poposafari-dashboard 에서 덮어쓸 수 있다.
+Environment=BIND_ADDR=172.30.1.13
+Environment=PORT=8080
+EnvironmentFile=-/etc/default/poposafari-dashboard
+
+ExecStart=/usr/bin/python3 -m http.server ${PORT} --bind ${BIND_ADDR}
+
+Restart=on-failure
+RestartSec=5
+
+# 정적 파일만 읽으면 되는 프로세스다. 웨어하우스(/srv/warehouse, 0700)에는
+# 접근할 이유가 없다 — 데이터는 build.sh 가 미리 구워 public/data 에 둔다.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=@REPO@/dashboard/public
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+#
+# PopoSafari — 대시보드 정합성 검사.
+#
+#   DB=/tmp/w.duckdb ./dashboard/check.sh
+#
+# 차트가 읽는 컬럼과 build.sh 가 굽는 JSON 의 컬럼이 어긋나는 걸 잡는다.
+# 이게 어긋나면 **에러 없이 빈 차트**가 뜬다 — 정적 대시보드에서 가장 발견이
+# 늦는 고장이라 회귀 검사로 박아둔다. queries/*.sql 을 고칠 때마다 돌 것.
+#
+# node 가 없으면 건너뛴다 (미니 PC 에 Node 를 들이지 않기로 했다).
+# 그 경우에도 JSON 유효성까지는 python3 로 검사한다.
+#
+set -euo pipefail
+
+DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+PUB=$DIR/dashboard/public
+
+[ -d "$PUB/data" ] || { echo "data/ 가 없다 — dashboard/build.sh 를 먼저 돌릴 것" >&2; exit 1; }
+
+# JSON 유효성 + 파일 존재
+python3 - "$PUB" <<'PY'
+import json, sys, pathlib
+pub = pathlib.Path(sys.argv[1])
+need = ["meta", "bait_rock", "dau", "catch_rate", "safari_session"]
+bad = 0
+for n in need:
+    p = pub / "data" / f"{n}.json"
+    if not p.exists():
+        print(f"  ✗ {n}.json 없음"); bad += 1; continue
+    try:
+        rows = json.loads(p.read_text())
+    except Exception as e:
+        print(f"  ✗ {n}.json 파싱 실패: {e}"); bad += 1; continue
+    if not isinstance(rows, list):
+        print(f"  ✗ {n}.json 이 배열이 아니다"); bad += 1; continue
+    print(f"  ✓ {n}.json  {len(rows)}행")
+sys.exit(1 if bad else 0)
+PY
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "  · node 없음 — 시리즈 키 대조는 건너뛴다"
+  exit 0
+fi
+
+node - "$PUB" <<'JS'
+const fs = require('fs'), path = require('path');
+const pub = process.argv[2];
+const src = fs.readFileSync(path.join(pub, 'app.js'), 'utf8');
+
+// seriesSpec 만 떼어내 평가한다. 외부 의존이 없다.
+const m = src.match(/function seriesSpec[\s\S]*?\n}\n/);
+if (!m) { console.error('  ✗ app.js 에서 seriesSpec 를 찾지 못했다'); process.exit(1); }
+// 괄호로 감싸 **함수 표현식**으로 평가한다. 그냥 eval 하면 함수 선언이
+// 바깥 스코프에 새어 나가 아래 const 와 충돌한다.
+const seriesSpec = eval('(' + m[0] + ')');
+
+// index.html 의 모드 버튼에서 모드 목록을 뽑는다 — 여기서 읽으면 HTML 과
+// app.js 가 어긋나는 것도 같이 잡힌다.
+const html = fs.readFileSync(path.join(pub, 'index.html'), 'utf8');
+const MODES = {};
+for (const seg of html.matchAll(/data-mode-for="(\w+)"([\s\S]*?)<\/div>/g)) {
+  MODES[seg[1]] = [...seg[2].matchAll(/data-mode="(\w+)"/g)].map((x) => x[1]);
+}
+
+let bad = 0, checked = 0;
+for (const [metric, modes] of Object.entries(MODES)) {
+  const rows = JSON.parse(fs.readFileSync(path.join(pub, 'data', `${metric}.json`), 'utf8'));
+  const cols = new Set(Object.keys(rows[0] || {}));
+  for (const mode of modes) {
+    const spec = seriesSpec(metric, mode);
+    if (!spec.length) { console.log(`  ✗ ${metric}:${mode} — 시리즈 정의가 비었다`); bad++; continue; }
+    const missing = spec.filter((s) => !cols.has(s.key)).map((s) => s.key);
+    checked += spec.length;
+    if (missing.length) {
+      console.log(`  ✗ ${metric}:${mode} — 데이터에 없는 컬럼: ${missing.join(', ')}`);
+      bad++;
+    } else {
+      console.log(`  ✓ ${metric}:${mode} — 시리즈 ${spec.length}개`);
+    }
+  }
+}
+console.log(`  시리즈 키 ${checked}개 검사, 불일치 ${bad}개`);
+process.exit(bad ? 1 : 0);
+JS

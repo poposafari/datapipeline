@@ -1,7 +1,11 @@
 -- PopoSafari — master/LATEST → wh.master_*
 --
--- server 레포 push-master.sh 가 올린 마스터를 읽는다. **복사본을 이 레포에 두지 않는다**
--- — 밸런스 커밋마다 바뀌므로 조용히 낡는다.
+-- ⚠️ run.sh 는 R2 에 master/LATEST 가 있을 때만 이 파일을 실행한다.
+--    없으면 21_master_stub.sql 로 빈 테이블을 세운다 — server 레포에
+--    push-master.sh 가 아직 없어서 **비어 있는 게 현재의 정상 상태**다.
+--
+-- 마스터가 실리면 server 레포 push-master.sh 가 올린 것을 읽는다.
+-- **복사본을 이 레포에 두지 않는다** — 밸런스 커밋마다 바뀌므로 조용히 낡는다.
 --
 -- 타입 변환은 하지 않는다(all_varchar). CSV 스키마가 흔들려도 적재는 성공해야 하고,
 -- 캐스팅 실패는 뷰(views/10_master_join.sql)에서 TRY_CAST 로 흡수한다.

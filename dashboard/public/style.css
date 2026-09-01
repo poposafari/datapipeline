@@ -1,0 +1,150 @@
+/* PopoSafari 대시보드 — 미니 PC 에서 정적 파일로 서빙된다.
+   빌드 툴체인이 없으므로 CSS 변수 하나로 라이트/다크를 처리한다. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg:        #f6f7f9;
+  --panel:     #ffffff;
+  --border:    #dfe3e8;
+  --text:      #1c2024;
+  --muted:     #6b7280;
+  --accent:    #2f6f4f;
+
+  /* 시리즈 색. 차트에서 getComputedStyle 로 읽어 쓴다. */
+  --s-bait:    #3b82f6;
+  --s-rock:    #b45309;
+  --s-plain:   #9ca3af;
+  --s-dau:     #6366f1;
+  --s-new:     #10b981;
+  --s-caught:  #10b981;
+  --s-flee:    #ef4444;
+  --s-break:   #f59e0b;
+  --s-dwell:   #0ea5e9;
+  --s-warn:    #ef4444;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:      #14171a;
+    --panel:   #1c2024;
+    --border:  #2c3238;
+    --text:    #e6e8ea;
+    --muted:   #9aa3ad;
+    --accent:  #6ee7a8;
+
+    --s-bait:  #60a5fa;
+    --s-rock:  #fbbf24;
+    --s-plain: #6b7280;
+    --s-dau:   #818cf8;
+    --s-new:   #34d399;
+    --s-caught:#34d399;
+    --s-flee:  #f87171;
+    --s-break: #fbbf24;
+    --s-dwell: #38bdf8;
+    --s-warn:  #f87171;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo",
+        "Noto Sans KR", "Segoe UI", sans-serif;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .92em;
+  background: color-mix(in srgb, var(--border) 45%, transparent);
+  padding: .05em .35em;
+  border-radius: 3px;
+}
+
+/* ── 상단 ─────────────────────────────────────────────── */
+.top {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  align-items: flex-end; justify-content: space-between;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.top h1 { margin: 0; font-size: 19px; letter-spacing: -.01em; }
+.sub { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+.meta {
+  color: var(--muted); font-size: 12px; text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.meta .stale { color: var(--s-warn); font-weight: 600; }
+
+/* ── 컨트롤 ───────────────────────────────────────────── */
+.controls {
+  display: flex; flex-wrap: wrap; gap: 22px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.group { display: flex; align-items: center; gap: 9px; }
+.label { color: var(--muted); font-size: 12px; }
+
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.seg button {
+  border: 0; background: transparent; color: var(--muted);
+  padding: 5px 11px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--panel); font-weight: 600; }
+.seg.small button { padding: 4px 9px; font-size: 11.5px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  border: 1px solid var(--border); background: transparent; color: var(--muted);
+  border-radius: 999px; padding: 3px 11px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* ── 카드 ─────────────────────────────────────────────── */
+main { padding: 18px 22px 6px; display: grid; gap: 18px; }
+@media (min-width: 1180px) { main { grid-template-columns: 1fr 1fr; } }
+
+.card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px 18px 14px;
+}
+.card[hidden] { display: none; }
+.card-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.card h2 { margin: 0; font-size: 15px; }
+.hint { margin: 4px 0 0; color: var(--muted); font-size: 12px; max-width: 52ch; }
+
+.series { display: flex; flex-wrap: wrap; gap: 6px; margin: 11px 0 4px; }
+.series .chip { font-size: 11.5px; padding: 2px 9px; }
+.series .chip[aria-pressed="true"] { color: var(--text); }
+.series .swatch {
+  display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  margin-right: 6px; vertical-align: baseline;
+}
+
+.plot { position: relative; height: 260px; margin-top: 6px; }
+.plot canvas { width: 100% !important; height: 100% !important; }
+
+.empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 13px; text-align: center; padding: 0 20px;
+}
+
+.note { margin-top: 10px; color: var(--muted); font-size: 11.5px; }
+.note.warn { color: var(--s-warn); }
+
+/* ── 하단 ─────────────────────────────────────────────── */
+.foot {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 22px 26px; color: var(--muted); font-size: 12px;
+}
+.foot button {
+  border: 1px solid var(--border); background: transparent; color: var(--muted);
+  border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer;
+}

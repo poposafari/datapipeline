@@ -2,7 +2,11 @@
 #
 # PopoSafari — 일일 적재. cron 04:00 KST (19:00 UTC).
 #
-#   secrets → 스키마 → audit 적재 → master 적재 → 뷰 → 어서션
+#   secrets → 스키마 → 스캔 계획 → audit 적재 → master → load_log → 뷰 → 어서션
+#
+# duckdb 를 두 번 부른다. SQL 에는 분기가 없는데, R2 에 아카이브 객체가 0개이거나
+# 마스터가 없는 경우를 **정상 경로로** 통과시켜야 하기 때문이다. 1단계가 개수를
+# 세고 셸이 2단계 스크립트를 조립한다.
 #
 # 어느 단계든 실패하면 Discord 로 알리고 0이 아닌 코드로 죽는다.
 # 적재 전에 .duckdb 를 하드링크 스냅샷으로 떠 두므로, 적재 중 크래시로 파일이
@@ -77,13 +81,48 @@ fi
 
 log "적재 시작 r2_base=$R2_BASE db=$DB"
 
-$DUCKDB <<SQL || fail "SQL 실행 실패"
+# ── 1단계: 스키마 + 스캔 계획 ─────────────────────────────────────────
+# SQL 에는 분기가 없다. 그런데 DuckDB 의 read_json 은 0개 파일에 매칭되면 에러이고,
+# R2 에 객체가 아직 없는 날에도 파이프라인은 조용히 성공해야 한다.
+# → 대상 개수를 먼저 세고, 셸이 다음 단계를 조립한다.
+PLAN=$($DUCKDB -noheader -list <<SQL
 $PRELUDE
 SET VARIABLE r2_base = '$R2_BASE';
 ATTACH IF NOT EXISTS '$DB' AS wh;
 .read $DIR/load/00_schema.sql
-.read $DIR/load/10_load_audit.sql
-.read $DIR/load/20_load_master.sql
+.read $DIR/load/05_scan.sql
+SELECT (SELECT count(*) FROM wh.scan_plan) || '|' || (SELECT count(*) FROM wh.master_plan);
+SQL
+) || fail "스캔 계획 실패 (R2 자격증명 또는 경로 확인: $R2_BASE)"
+
+SCAN_N=${PLAN%%|*}
+MASTER_N=${PLAN##*|}
+log "스캔 계획: 아카이브 객체 ${SCAN_N}개, 마스터 ${MASTER_N}개"
+
+# ── 2단계: 적재 + 뷰 ──────────────────────────────────────────────────
+if [ "${SCAN_N:-0}" -gt 0 ]; then
+  AUDIT_STEP=".read $DIR/load/10_load_audit.sql"
+else
+  # 첫 배포일에 반드시 밟는 경로다. 실패가 아니라 정상이다.
+  log "적재 대상 없음 — R2 에 스캔 창 안의 아카이브 객체가 없다"
+  AUDIT_STEP=""
+fi
+
+if [ "${MASTER_N:-0}" -gt 0 ]; then
+  MASTER_STEP=".read $DIR/load/20_load_master.sql"
+else
+  # server 레포에 push-master.sh 가 없어 master/ 가 비는 게 현재의 정상 상태다.
+  # 뷰가 컴파일되려면 테이블은 존재해야 하므로 빈 스텁을 세운다.
+  MASTER_STEP=".read $DIR/load/21_master_stub.sql"
+fi
+
+$DUCKDB <<SQL || fail "SQL 실행 실패"
+$PRELUDE
+SET VARIABLE r2_base = '$R2_BASE';
+ATTACH IF NOT EXISTS '$DB' AS wh;
+$AUDIT_STEP
+$MASTER_STEP
+.read $DIR/load/15_load_log.sql
 .read $DIR/views/00_audit.sql
 .read $DIR/views/10_master_join.sql
 .read $DIR/views/20_metrics.sql
@@ -99,8 +138,8 @@ $1
 SQL
 }
 
-SUMMARY=$(wh_read "SELECT format('삽입 {} / 총 {} / max_id {} / scan_from {}',
-                 rows_inserted, total_rows, coalesce(max_id, 0), scanned_from)
+SUMMARY=$(wh_read "SELECT format('객체 {} / 삽입 {} / 총 {} / max_id {} / scan_from {}',
+                 files_scanned, rows_inserted, total_rows, coalesce(max_id, 0), scanned_from)
    FROM wh.load_log ORDER BY run_at DESC LIMIT 1;")
 log "$SUMMARY"
 

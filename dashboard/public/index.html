@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PopoSafari 대시보드</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="title">
+    <h1>PopoSafari</h1>
+    <p class="sub">미니 PC 웨어하우스 · 집계값만 (개별 계정 식별 정보 없음)</p>
+  </div>
+  <!-- 정적 대시보드의 가장 흔한 사고는 낡은 숫자를 최신으로 착각하는 것이다.
+       기준 시각을 항상 띄운다. -->
+  <div id="meta" class="meta">불러오는 중…</div>
+</header>
+
+<nav class="controls">
+  <div class="group">
+    <span class="label">기간</span>
+    <div class="seg" id="range-seg">
+      <button data-range="7">7일</button>
+      <button data-range="30">30일</button>
+      <button data-range="90">90일</button>
+    </div>
+  </div>
+  <div class="group">
+    <span class="label">표시할 차트</span>
+    <div class="chips" id="visible-chips"></div>
+  </div>
+</nav>
+
+<main id="cards">
+
+  <section class="card" data-card="bait_rock">
+    <div class="card-head">
+      <div>
+        <h2>미끼 · 돌 사용</h2>
+        <p class="hint">미끼는 도주율 &times;0.5 / 포획률 &times;0.5, 돌은 둘 다 &times;1.5.
+           위험을 감수할지 고르게 만든 장치가 실제로 쓰이는지를 본다.</p>
+      </div>
+      <div class="seg small" data-mode-for="bait_rock">
+        <button data-mode="count">사용 건수</button>
+        <button data-mode="share">시도 대비 비율</button>
+        <button data-mode="effect">잔류율(효과)</button>
+      </div>
+    </div>
+    <div class="series" data-series-for="bait_rock"></div>
+    <div class="plot"><canvas id="c-bait_rock"></canvas><div class="empty" hidden></div></div>
+    <div class="note" data-note-for="bait_rock"></div>
+  </section>
+
+  <section class="card" data-card="dau">
+    <div class="card-head">
+      <div>
+        <h2>DAU · 신규 가입</h2>
+        <p class="hint">DAU = 그날 로그를 하나라도 남긴 계정.
+           신규 가입 = <code>CREATE_USER</code> — 계정당 정확히 1회다.</p>
+      </div>
+      <div class="seg small" data-mode-for="dau">
+        <button data-mode="dual">이중 축</button>
+        <button data-mode="single">단일 축</button>
+      </div>
+    </div>
+    <div class="series" data-series-for="dau"></div>
+    <div class="plot"><canvas id="c-dau"></canvas><div class="empty" hidden></div></div>
+    <div class="note" data-note-for="dau"></div>
+  </section>
+
+  <section class="card" data-card="catch_rate">
+    <div class="card-head">
+      <div>
+        <h2>포획률</h2>
+        <p class="hint">분모는 <code>POKEMON_CATCH_ATTEMPT</code>. 튜토리얼(s000)은 강제 성공이라 제외했다.</p>
+      </div>
+      <div class="seg small" data-mode-for="catch_rate">
+        <button data-mode="outcome">결과 분포</button>
+        <button data-mode="rate">성공률</button>
+        <button data-mode="segment">미끼/돌별 성공률</button>
+      </div>
+    </div>
+    <div class="series" data-series-for="catch_rate"></div>
+    <div class="plot"><canvas id="c-catch_rate"></canvas><div class="empty" hidden></div></div>
+    <div class="note" data-note-for="catch_rate"></div>
+  </section>
+
+  <section class="card" data-card="safari_session">
+    <div class="card-head">
+      <div>
+        <h2>사파리 체류시간</h2>
+        <p class="hint">입장→퇴장 페어링. 창을 닫거나 연결이 끊기면 퇴장 기록이 없어
+           <strong>짝이 안 맞는 게 정상</strong>이다 — 그 비율 자체가 지표다.</p>
+      </div>
+      <div class="seg small" data-mode-for="safari_session">
+        <button data-mode="dwell">체류시간</button>
+        <button data-mode="unclosed">미완결 비율</button>
+      </div>
+    </div>
+    <div class="series" data-series-for="safari_session"></div>
+    <div class="plot"><canvas id="c-safari_session"></canvas><div class="empty" hidden></div></div>
+    <div class="note" data-note-for="safari_session"></div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <button id="reset">토글 초기화</button>
+  <span id="built"></span>
+</footer>
+
+<script src="vendor/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

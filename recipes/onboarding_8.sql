@@ -24,7 +24,9 @@
 -- ① 일별 활성 계정 (DAU 근사) ────────────────────────────────────────
 -- 세션 시작 이벤트가 없어서 "모든 액션 중 하나라도 남긴 계정"으로 근사한다.
 -- 로그인만 하고 아무것도 안 한 유저는 LOGIN_* 로 잡히니 실질적으로 커버된다.
--- server S2-3(SESSION_START/END) 배포 후 진짜 세션 기반으로 교체할 것.
+-- 이건 wh.dau_daily 로 승격되어 있다 — 신규 가입(CREATE_USER)까지 같이 본다.
+-- 진짜 세션 기반으로 바꾸려면 SOCKET_CONNECT/SOCKET_DISCONNECT 를 쓰면 된다
+-- (계획서가 SESSION_START/END 라고 부른 것의 실제 이름이다). 아직 안 했다.
 SELECT created_at_kst::DATE      AS d_kst,
        count(DISTINCT account_id) AS dau
 FROM wh.audit_v
@@ -69,12 +71,10 @@ GROUP BY 1 ORDER BY 1;
 -- ★ isS000Starter=true 는 튜토리얼 강제 성공 포획이라 확률 분석에서
 --   **반드시 제외**해야 한다. audit_v.is_starter 로 노출해 뒀다.
 --
--- ⚠️ 이건 **분자만 센다.** CatchResult 는 'caught'|'fail'|'flee' 3값인데
---    auditTx 가 result='caught' 분기 안에만 있어서 실패·도주 시도는
---    어디에도 기록되지 않는다.
---    → **포획률(성공/시도)은 현재 데이터로 구할 수 없다.** 볼 소모량으로
---      역산하는 우회도 부정확하다(성공 시에만 소모되므로 항상 1:1).
---      server S2-2(POKEMON_CATCH_ATTEMPT)를 기다려야 풀린다.
+-- ⚠️ 이건 **분자만 센다.** POKEMON_CATCH 는 성공만 기록된다.
+--    ✅ 분모는 이제 있다 — server 가 POKEMON_CATCH_ATTEMPT / POKEMON_CATCH_FAIL 을
+--       배포했다(2026-08-20, 커밋 9f00595). 포획률은 wh.catch_rate_daily 를 볼 것.
+--       여기 쿼리는 "무엇을 얼마나 잡았나"(구성) 용도로 그대로 둔다.
 SELECT c.map_id,
        p.name_ko,
        p.tier,
@@ -89,10 +89,11 @@ WHERE c.action = 'POKEMON_CATCH'
 GROUP BY 1, 2, 3 ORDER BY catches DESC;
 
 
--- ⑤ 사파리 세션 길이 (추정 — 정확한 값이 아니다) ─────────────────────
--- SAFARI_EXIT 가 미배선(safari.controller.ts 에서 주석 처리)이라
--- **다음 진입까지의 간격일 뿐 체류 시간이 아니다.**
--- 진짜 체류 시간을 원하면 server 레포에서 주석 한 줄을 푸는 게 정답이다(S2-1).
+-- ⑤ 사파리 세션 길이 ─────────────────────────────────────────────────
+-- ✅ SAFARI_EXIT 는 이제 배선되어 있다 (safari.controller.ts:44).
+--    진짜 체류시간은 wh.safari_session / wh.safari_session_daily 를 볼 것 —
+--    s000 제외와 짝 안 맞는 세션 처리가 거기 들어 있다.
+--    아래는 "다음 진입까지의 간격"이라 체류시간이 아니다. 재방문 주기를 볼 때만 쓸 것.
 SELECT account_id,
        created_at AS entered,
        lead(created_at) OVER (PARTITION BY account_id ORDER BY created_at) - created_at AS gap

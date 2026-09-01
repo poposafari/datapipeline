@@ -8,12 +8,19 @@ CRON_TZ=UTC
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 
-# ── 적재 — 19:00 UTC = 04:00 KST ─────────────────────────────────────
-# 순서가 중요하다. prod 재스윕이 03:10 UTC 에 backfill/dt=<어제>/resweep.csv.gz 를
-# 쓴다. 적재를 그보다 앞서 돌리면 그날 갭 보충분을 하루 늦게 받는다.
-# 19:00 UTC 면 충분히 뒤다.
-0 19 * * *   @USER@  @REPO@/load/run.sh        >> @LOG@/load.log  2>&1
+# ── 적재 + 대시보드 — 19:00 UTC = 04:00 KST ──────────────────────────
+#
+# 시각 자체는 자유롭다. 예전 주석은 "prod 재스윕(03:10 UTC) 뒤여야 한다"였는데
+# **재스윕은 존재하지 않는다** — server 레포가 실제로 배포한 건 재스윕이 아니라
+# scripts/ops/archive-audit.sh 이고, 그건 짧은 주기로 계속 돌면서 audit_log 를
+# R2 로 옮긴다. 이쪽이 지켜야 할 조건은 하나뿐이다:
+#   **스캔 창(7일)이 아카이브 주기보다 넉넉히 넓을 것.**
+# 하루 1회 + 7일 창이면 미니 PC 가 엿새 꺼져 있어도 따라잡는다.
+#
+# 대시보드 빌드를 `&&` 로 잇는 이유: 적재가 실패한 날 낡은 JSON 을 덮어써서
+# "최신처럼 보이는 옛 숫자"를 만들지 않기 위해서다. 정적 대시보드의 가장 흔한 사고다.
+0 19 * * *   @USER@  @REPO@/load/run.sh && @REPO@/dashboard/build.sh  >> @LOG@/load.log  2>&1
 
 # ── 대사 — 19:30 UTC = 04:30 KST ─────────────────────────────────────
-# 적재가 끝난 뒤여야 한다. prod 에 접근하지 않고 R2 의 meta/counts.csv.gz 만 읽는다.
+# 적재가 끝난 뒤여야 한다. prod 에 접근하지 않고 R2 아카이브 객체만 읽는다.
 30 19 * * *  @USER@  @REPO@/checks/reconcile.sh >> @LOG@/check.log 2>&1

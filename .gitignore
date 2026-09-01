@@ -12,6 +12,9 @@ secrets.sql
 fixtures/out/
 fixtures/out-dirty/
 
+# 대시보드 데이터 — dashboard/build.sh 가 웨어하우스에서 매일 다시 굽는다.
+dashboard/public/data/
+
 # 로컬 실행 산출물
 *.log
 .DS_Store

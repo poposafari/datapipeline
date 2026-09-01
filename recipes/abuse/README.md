@@ -24,7 +24,7 @@ D .read /opt/poposafari-data-pipeline/recipes/abuse/shiny_binomial.sql
 
 | 룰 | 조건 |
 | --- | --- |
-| 시간당 포획 **시도** z-score | **server S2-2 배포 후.** 지금은 분모가 없다 — `POKEMON_CATCH` 는 성공만 기록된다 |
+| 시간당 포획 **시도** z-score | ✅ **조건 해제됨.** `POKEMON_CATCH_ATTEMPT` 가 배포되어 분모가 생겼다(커밋 `9f00595`). `wh.catch_attempt` 위에서 짜면 된다 — 아직 안 썼다 |
 | 임의 좌표 이동 | **server S4-1 수정 후.** `MAP_CHANGE.detail.rejected` 가 신호원인데 현재 좌표 검증이 주석 처리되어 있어 신호 자체가 없다 |
 
 ## 작성하지 않는 것
