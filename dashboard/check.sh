@@ -15,17 +15,20 @@ set -euo pipefail
 
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PUB=$DIR/dashboard/public
+# 검사할 JSON 이 있는 곳. 기본은 라이브 경로지만, 회귀 검사는 임시 디렉터리를 준다 —
+# **테스트가 서빙 중인 대시보드를 덮어쓰면 안 된다.**
+DATA_DIR=${DATA_DIR:-$PUB/data}
 
-[ -d "$PUB/data" ] || { echo "data/ 가 없다 — dashboard/build.sh 를 먼저 돌릴 것" >&2; exit 1; }
+[ -d "$DATA_DIR" ] || { echo "$DATA_DIR 가 없다 — dashboard/build.sh 를 먼저 돌릴 것" >&2; exit 1; }
 
 # JSON 유효성 + 파일 존재
-python3 - "$PUB" <<'PY'
+python3 - "$DATA_DIR" <<'PY'
 import json, sys, pathlib
-pub = pathlib.Path(sys.argv[1])
+data = pathlib.Path(sys.argv[1])
 need = ["meta", "bait_rock", "dau", "catch_rate", "safari_session"]
 bad = 0
 for n in need:
-    p = pub / "data" / f"{n}.json"
+    p = data / f"{n}.json"
     if not p.exists():
         print(f"  ✗ {n}.json 없음"); bad += 1; continue
     try:
@@ -43,9 +46,10 @@ if ! command -v node >/dev/null 2>&1; then
   exit 0
 fi
 
-node - "$PUB" <<'JS'
+node - "$PUB" "$DATA_DIR" <<'JS'
 const fs = require('fs'), path = require('path');
 const pub = process.argv[2];
+const dataDir = process.argv[3];
 const src = fs.readFileSync(path.join(pub, 'app.js'), 'utf8');
 
 // seriesSpec 만 떼어내 평가한다. 외부 의존이 없다.
@@ -65,7 +69,7 @@ for (const seg of html.matchAll(/data-mode-for="(\w+)"([\s\S]*?)<\/div>/g)) {
 
 let bad = 0, checked = 0;
 for (const [metric, modes] of Object.entries(MODES)) {
-  const rows = JSON.parse(fs.readFileSync(path.join(pub, 'data', `${metric}.json`), 'utf8'));
+  const rows = JSON.parse(fs.readFileSync(path.join(dataDir, `${metric}.json`), 'utf8'));
   const cols = new Set(Object.keys(rows[0] || {}));
   for (const mode of modes) {
     const spec = seriesSpec(metric, mode);

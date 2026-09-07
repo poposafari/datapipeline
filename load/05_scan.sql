@@ -49,9 +49,9 @@ FROM (
 WHERE batch_date IS NOT NULL
   AND batch_date >= (SELECT scan_from FROM wh.scan_state);
 
--- ── 마스터 ───────────────────────────────────────────────────────────
--- server 레포에 push-master.sh 가 아직 없어서 master/ 프리픽스는 보통 비어 있다.
--- 있으면 읽고, 없으면 run.sh 가 21_master_stub.sql 로 빈 테이블을 세운다
--- (뷰가 컴파일되려면 테이블이 존재해야 한다).
-CREATE OR REPLACE TABLE wh.master_plan AS
-SELECT file AS path FROM glob(getvariable('r2_base') || '/master/LATEST');
+-- ── 마스터는 여기서 탐지하지 않는다 ──────────────────────────────────
+-- 예전에는 glob(r2_base || '/master/LATEST') 로 존재 여부를 봤는데, **원격
+-- (httpfs)에서 와일드카드 없는 glob 은 LIST 를 하지 않고 경로를 그대로
+-- 돌려준다.** 그래서 없는 파일을 있다고 판정하고, 이어지는 read_text 가
+-- 404 로 죽었다. 로컬 파일시스템에서는 정상 동작해서 픽스처로는 안 잡혔다.
+-- → run.sh 가 스텁을 먼저 세우고 실제 적재는 실패를 허용하며 시도한다.

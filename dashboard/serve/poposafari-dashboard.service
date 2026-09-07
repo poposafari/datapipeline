@@ -40,7 +40,9 @@ ProtectSystem=strict
 ProtectHome=yes
 ReadOnlyPaths=@REPO@/dashboard/public
 PrivateDevices=yes
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_UNIX 를 빼면 안 된다 — 파이썬 런타임과 journald 로그 경로가 유닉스 소켓을 쓴다.
+# 빼두면 서비스가 시작조차 못 하고 원인이 로그에 안 남아 디버깅이 길어진다.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 MemoryMax=128M
 
 [Install]

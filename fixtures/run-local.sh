@@ -255,6 +255,37 @@ gt0 "적재 대상이 0개여도 load_log 에 이력이 남는다" "$EN"
 EV=$(q "$WORK/e.duckdb" "SELECT count(*) FROM duckdb_views() WHERE internal = false;")
 gt0 "마스터가 없어도 뷰가 전부 컴파일됨 (스텁)" "$EV"
 
+# ★ secrets.sql 이 있으면 CREATE ... SECRET 이 결과 행('true')을 하나 뱉는다.
+#   그 줄이 스캔 계획 출력 앞에 붙어 SCAN_N 이 'true\n46' 이 되면, 정수 비교가
+#   실패해 **객체가 있는데도 '적재 대상 없음'으로 조용히 건너뛴다.**
+#   SKIP_SECRETS=1 로만 테스트하면 영영 안 잡히는 자리라 여기서 재현한다.
+cat > "$WORK/secrets.sql" <<'EOS'
+CREATE OR REPLACE SECRET regression_probe (
+  TYPE r2, ACCOUNT_ID 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  KEY_ID 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  SECRET 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+);
+EOS
+DB=$WORK/sec.duckdb R2_BASE="$CLEAN" SECRETS="$WORK/secrets.sql" SKIP_ASSERTIONS=1   "$DIR/load/run.sh" >/dev/null 2>&1 || true
+SECN=$(q "$WORK/sec.duckdb" "SELECT count(*) FROM wh.audit;" 2>/dev/null || echo 0)
+check "PRELUDE 가 결과 행을 뱉어도 스캔 계획을 옳게 읽는다" "$N1" "$SECN"
+
+# ★ master/ 가 없어도 끝까지 돌아야 한다.
+#   예전에는 glob(r2_base||'/master/LATEST') 로 존재를 판정했는데, 원격(httpfs)
+#   에서는 와일드카드 없는 glob 이 존재 확인 없이 경로를 돌려줘 404 로 죽었다.
+#   로컬에서는 정상 동작해서 픽스처로 안 잡히던 자리다.
+NOMASTER=$WORK/nomaster
+mkdir -p "$NOMASTER"; cp -R "$CLEAN/audit" "$NOMASTER/"
+if DB=$WORK/nm.duckdb R2_BASE="$NOMASTER" SKIP_SECRETS=1 SKIP_ASSERTIONS=1      "$DIR/load/run.sh" >/dev/null 2>&1; then
+  ok "master/ 가 없어도 적재가 완주"
+else
+  bad "master/ 가 없어도 적재가 완주" "exit 0" "exit 1"
+fi
+NMN=$(q "$WORK/nm.duckdb" "SELECT count(*) FROM wh.audit;" 2>/dev/null || echo 0)
+check "master/ 없이도 감사 행이 전량 적재됨" "$N1" "$NMN"
+NMV=$(q "$WORK/nm.duckdb" "SELECT count(*) FROM duckdb_views() WHERE internal = false;" 2>/dev/null || echo 0)
+gt0 "master/ 없이도 뷰가 전부 컴파일됨" "$NMV"
+
 # ── 오염 픽스처 ──────────────────────────────────────────────────────
 echo
 echo "▶ 회귀: 오염 픽스처에서 문제를 탐지하는가"
@@ -324,16 +355,17 @@ done
 # ── 대시보드 ─────────────────────────────────────────────────────────
 echo
 echo "▶ 대시보드"
-# dashboard/public/data/ 는 .gitignore 대상이고 build.sh 가 매일 덮어쓰는 곳이라
-# 여기에 그대로 굽는다 — 실제 운영과 같은 경로를 검증하게 된다.
-if DB="$DB" "$DIR/dashboard/build.sh" >/dev/null 2>&1; then
+# ★ 임시 디렉터리에 굽는다. 기본 경로(dashboard/public/data/)에 구우면
+#   **미니 PC 에서 서빙 중인 라이브 대시보드를 픽스처 숫자로 덮어쓴다.**
+#   개발 머신에선 무해하지만 운영 박스에서 회귀를 돌리는 순간 사고가 된다.
+if DB="$DB" OUT="$WORK/dash" "$DIR/dashboard/build.sh" >/dev/null 2>&1; then
   ok "build.sh 가 JSON 을 구움"
 else
   bad "build.sh 실행" "exit 0" "exit 1"
 fi
 # 차트가 읽는 컬럼과 실제 JSON 컬럼이 어긋나면 **에러 없이 빈 차트**가 뜬다.
 # 정적 대시보드에서 가장 발견이 늦는 고장이라 여기서 잡는다.
-if "$DIR/dashboard/check.sh" >"$WORK/dash.log" 2>&1; then
+if DATA_DIR="$WORK/dash" "$DIR/dashboard/check.sh" >"$WORK/dash.log" 2>&1; then
   ok "차트 시리즈 키가 데이터 컬럼과 일치"
 else
   bad "차트 시리즈 키 일치" "일치" "$(tail -3 "$WORK/dash.log")"

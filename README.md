@@ -4,7 +4,7 @@
 
 | | |
 | --- | --- |
-| 입력 | R2 버킷 `poposafari-analytics` 의 `audit/` 프리픽스 하나뿐 |
+| 입력 | R2 버킷 `poposafari-db-backups` 의 `audit/` 프리픽스 하나뿐 |
 | 정본 | **R2 아카이브.** prod 는 업로드 직후 `audit_log` 를 비운다 (§정본이 뒤집혔다) |
 | prod 접근 | **없다.** 대사도 R2 객체끼리 한다. Tailscale 은 ad-hoc 디버깅 전용 |
 | 도구 | DuckDB (정적 단일 바이너리). Celeron N3150 에 JVM 기반 BI 는 부담 |
@@ -16,10 +16,21 @@
 
 ## 계약 — server 레포가 실제로 올리는 것
 
+`poposafari-db-backups` 가 **유일하게 운영 중인 버킷**이고, 두 스크립트가 프리픽스로
+나눠 쓴다. lifecycle 규칙도 프리픽스별로 다르다.
+
 ```
-s3://poposafari-analytics/
-  audit/YYYY/MM/DD/audit-<UTC stamp>-<cutoff>.jsonl.gz
+s3://poposafari-db-backups/
+├── pg/       backup-pg.sh, 6시간마다 (UTC 00/06/12/18). lifecycle 7일
+│             ※ audit_log·session 은 --exclude-table-data (정의만, 데이터 없음)
+└── audit/    archive-audit.sh. 올린 뒤 DB 에서 DELETE → **여기가 유일 원본**
+    └── YYYY/MM/DD/audit-<UTC stamp>-<cutoff>.jsonl.gz
+              날짜는 로그가 찍힌 날이 아니라 **스크립트가 돈 UTC 시각**이다
+              lifecycle 365일
 ```
+
+계획서가 말한 별도 `poposafari-analytics` 버킷은 **만들어지지 않았다.**
+§보안 경계의 미해결 판단이 거기에 걸려 있다.
 
 `scripts/ops/archive-audit.sh` 가 다음을 gzip 해서 올린다:
 
@@ -41,8 +52,22 @@ SELECT row_to_json(t) FROM (SELECT * FROM audit_log WHERE id <= $CUTOFF ORDER BY
 
 `archive-audit.sh` 는 업로드 뒤 `DELETE FROM audit_log` 를 하고, `backup-pg.sh` 는
 `--exclude-table-data=audit_log` 다. 즉 **R2 아카이브가 유일본이고 이 웨어하우스가
-두 번째 사본이다.** `poposafari.duckdb` 를 지우고 다시 만들 수 있는 건 R2 객체가
-살아 있는 동안뿐이다.
+두 번째 사본이다.**
+
+### ⚠️ 365일이 지나면 이 관계가 뒤집힌다
+
+`audit/` 프리픽스의 lifecycle 은 **365일**이다. 그 뒤로는 아카이브가 삭제되므로
+**웨어하우스가 그 데이터의 유일한 사본이 된다.** 그런데 `/srv/warehouse` 는 단일
+소비자 디스크에 이중화가 없다(§보안 경계).
+
+당장은 문제가 아니다 — 아카이브가 쌓이기 시작한 지 얼마 안 됐다. 다만 **1년이 되기
+전에** 셋 중 하나를 정해야 한다:
+
+1. `audit/` lifecycle 을 늘린다 (가장 싸다. R2 저장비는 하루 10–24MB 수준)
+2. `poposafari.duckdb` 를 정기 백업한다
+3. 365일 넘은 구간을 Parquet 으로 떠서 별도 보관한다
+
+**그때까지는 아래 복구 절차 중 "전량 재구축"이 안전하다.** 그 뒤로는 아니다.
 
 ### 알려진 결함 — 복구 불가능한 유실 창
 
@@ -74,7 +99,8 @@ SELECT row_to_json(t) FROM (SELECT * FROM audit_log WHERE id <= $CUTOFF ORDER BY
 
 ```bash
 sudo ./bootstrap/install.sh
-# 1. /srv/warehouse/secrets.sql 에 R2 자격증명 입력 (읽기 전용 + analytics 스코프)
+# 1. /srv/warehouse/secrets.sql 에 R2 자격증명 입력
+#    (읽기 전용 + poposafari-db-backups 버킷 스코프)
 # 2. 첫 적재 — 빈 테이블이면 scan_from 이 자동으로 전량으로 넓어진다
 ./load/run.sh && ./dashboard/build.sh
 ```
@@ -82,12 +108,6 @@ sudo ./bootstrap/install.sh
 `install.sh` 가 하는 일: DuckDB 버전 고정 설치, `/srv/warehouse` 0700,
 `secrets.sql` 0600, `/etc/cron.d/poposafari`, logrotate, 대시보드 systemd 유닛.
 
-> ⚠️ **prod ops 1회가 선행되어야 한다.** `archive-audit.sh` 의 기본 버킷은
-> `.env.backup` 의 `poposafari-backups` 다. cron 줄에
-> `BACKUP_ENV=…/docker/prod/.env.audit` 를 주고 그 파일에
-> `R2_BUCKET=poposafari-analytics` 만 넣으면 server 코드 변경 없이 갈린다.
-> 이걸 안 하면 감사로그가 백업 버킷에 쌓이고, 미니 PC 토큰 스코프를 그쪽으로
-> 넓혀야 해서 아래 보안 경계가 무너진다.
 
 ## 일상 운영
 
@@ -114,6 +134,10 @@ cp /srv/warehouse/poposafari.duckdb.prev /srv/warehouse/poposafari.duckdb
 # 전량 재구축 — 빈 테이블이면 scan_from 이 자동으로 2026-01-01 부터로 넓어진다.
 rm /srv/warehouse/poposafari.duckdb && ./load/run.sh
 ```
+
+> ⚠️ **전량 재구축은 R2 에 남아 있는 것만 되살린다.** `audit/` lifecycle 이 365일이므로,
+> 아카이브 시작일로부터 1년이 지난 뒤에는 이 명령이 **1년 넘은 데이터를 영구 삭제**한다.
+> 위 §365일 절의 조치를 하기 전에는 `.duckdb` 를 지우기 전에 반드시 사본을 떠 둘 것.
 
 ---
 
@@ -229,8 +253,8 @@ R2 도 prod 도 없이 전 구간이 돈다. `fixtures/gen.py` 가 `archive-audi
 
 | 항목 | 조치 |
 | --- | --- |
-| R2 토큰 | 읽기 전용 + `poposafari-analytics` 스코프. 백업 버킷 토큰 재사용 금지 |
-| `poposafari-backups` | **읽지 않는다.** 감사로그가 그쪽으로 가고 있다면 위 prod ops 로 분리할 것 |
+| R2 토큰 | 읽기 전용 + `poposafari-db-backups` 스코프. `backup-pg.sh` 의 쓰기 토큰 재사용 금지 |
+| `pg/` 프리픽스 | **읽지 않는다.** 다만 R2 토큰은 **버킷 단위로만** 스코프를 걸 수 있고 프리픽스 단위로는 못 건다 — 즉 미니 PC 의 읽기 전용 토큰은 기술적으로 `pg/` 도 읽을 수 있다. `pg_dump` 에서 `session`·`audit_log` **데이터**는 빠져 있어(server `8e0d189`) 살아있는 인증 토큰은 없지만, **계정 비밀번호 해시는 남아 있다.** 아래 §미해결 판단 참고 |
 | `ip` | 소스에는 있다. **적재에서 버린다.** 웨어하우스에 영구 보존되지 않게 |
 | `url` 쿼리스트링 | 뷰에서 자른다. OAuth code 가 그대로 실려 온다 |
 | `body.username` | 뷰가 컬럼으로 꺼내지 않는다. 원본 `detail` 을 직접 봐야 보인다 |
@@ -245,6 +269,25 @@ R2 도 prod 도 없이 전 구간이 돈다. `fixtures/gen.py` 가 `archive-audi
 > "백업 버킷에 살아있는 `session.id` 가 있다"는 예전 근거는 더 이상 유효하지 않다.
 > 그래도 백업 버킷을 읽지 않는 원칙은 유지한다 — 계정 비밀번호 해시가 남아 있고,
 > 분석에 필요하지도 않다.
+
+### 미해결 판단 — `pg/` 와 같은 버킷을 읽는 문제
+
+R2 API 토큰은 **버킷 단위로만** 스코프가 걸린다. 프리픽스별 제한이 없다.
+`audit/` 와 `pg/` 가 한 버킷에 있는 이상, 미니 PC 의 읽기 전용 토큰은
+pg_dump 도 읽을 수 있다. 파이프라인은 읽지 않지만 **읽을 수 있다는 사실 자체**가
+남는다. 미니 PC 는 LVM plain(디스크 암호화 없음)이고 물리 도난 시 토큰도 함께 나간다.
+
+노출 범위는 **계정 비밀번호 해시**다. 세션 토큰은 `8e0d189` 이후 덤프에 없다.
+
+선택지 셋:
+
+| | 내용 | 대가 |
+| --- | --- | --- |
+| **A. 수용** | 지금 그대로. 1인 가정 환경 + 해시만 노출 | 아무것도 안 함 |
+| **B. 버킷 분리** | `archive-audit.sh` cron 에 `BACKUP_ENV=…/.env.audit` (`R2_BUCKET=poposafari-analytics`). server 코드 변경 0 | **이미 쌓인 아카이브는 옛 버킷에 남는다** → 이전 기간은 여전히 옛 버킷 토큰이 필요하거나, 객체를 옮겨야 함 |
+| **C. 비밀번호 해시도 덤프에서 제외** | `backup-pg.sh` 에 `--exclude-table-data=account` 추가 | 복구 시 계정 테이블을 따로 챙겨야 함 — 권하지 않는다 |
+
+B 를 택한다면 **아카이브가 적게 쌓인 지금이 가장 싸다.** 시간이 갈수록 옮길 객체가 늘어난다.
 
 ---
 

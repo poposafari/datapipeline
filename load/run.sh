@@ -20,7 +20,7 @@ set -euo pipefail
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WH_DIR=${WH_DIR:-/srv/warehouse}
 DB=${DB:-$WH_DIR/poposafari.duckdb}
-R2_BASE=${R2_BASE:-r2://poposafari-analytics}
+R2_BASE=${R2_BASE:-r2://poposafari-db-backups}
 DUCKDB=${DUCKDB:-duckdb}
 SECRETS=${SECRETS:-$WH_DIR/secrets.sql}
 SKIP_SECRETS=${SKIP_SECRETS:-0}
@@ -63,6 +63,8 @@ ${1}
 trap 'fail "예기치 못한 오류 (line $LINENO)"' ERR
 
 mkdir -p "$(dirname "$DB")"
+WH_TMP_ERR=$(mktemp)
+trap 'rm -f "$WH_TMP_ERR"' EXIT
 
 # ── 적재 전 스냅샷 ────────────────────────────────────────────────────
 # 하드링크라 디스크를 거의 쓰지 않는다. DuckDB 는 파일을 제자리에서 고치지 않고
@@ -76,6 +78,15 @@ fi
 PRELUDE=""
 if [ "$SKIP_SECRETS" != "1" ]; then
   [ -f "$SECRETS" ] || fail "R2 자격증명이 없다: $SECRETS (bootstrap/secrets.sql.example 참고)"
+  # install.sh 가 템플릿을 그대로 배치하므로, 채우지 않은 채로 돌리는 게 흔하다.
+  # 그냥 두면 DuckDB 가 '<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com' 으로
+  # 요청을 보내고 IO Error 를 뱉는데, 진짜 원인이 한눈에 안 들어온다.
+  if grep -q "<[A-Z0-9_]\+>" "$SECRETS"; then
+    fail "R2 자격증명이 아직 템플릿이다 — 아래 자리표시자를 실제 값으로 채울 것.
+  파일: $SECRETS
+  남은 자리표시자: $(grep -o "<[A-Z0-9_]\+>" "$SECRETS" | sort -u | tr "\n" " ")
+토큰은 poposafari-db-backups 버킷 '읽기 전용'으로 새로 발급한다."
+  fi
   PRELUDE=".read $SECRETS"
 fi
 
@@ -86,18 +97,26 @@ log "적재 시작 r2_base=$R2_BASE db=$DB"
 # R2 에 객체가 아직 없는 날에도 파이프라인은 조용히 성공해야 한다.
 # → 대상 개수를 먼저 세고, 셸이 다음 단계를 조립한다.
 PLAN=$($DUCKDB -noheader -list <<SQL
+.bail on
 $PRELUDE
 SET VARIABLE r2_base = '$R2_BASE';
 ATTACH IF NOT EXISTS '$DB' AS wh;
 .read $DIR/load/00_schema.sql
 .read $DIR/load/05_scan.sql
-SELECT (SELECT count(*) FROM wh.scan_plan) || '|' || (SELECT count(*) FROM wh.master_plan);
+SELECT 'SCANPLAN|' || (SELECT count(*) FROM wh.scan_plan);
 SQL
 ) || fail "스캔 계획 실패 (R2 자격증명 또는 경로 확인: $R2_BASE)"
 
-SCAN_N=${PLAN%%|*}
-MASTER_N=${PLAN##*|}
-log "스캔 계획: 아카이브 객체 ${SCAN_N}개, 마스터 ${MASTER_N}개"
+# ⚠️ 출력에서 원하는 줄만 골라낸다. 앞선 구문들이 결과 행을 뱉기 때문이다 —
+#    특히 secrets.sql 의 CREATE ... PERSISTENT SECRET 이 'true' 한 줄을 낸다.
+#    그냥 통째로 받으면 SCAN_N 이 'true\n46' 이 되고, 정수 비교가 실패해
+#    **객체가 46개 있는데도 "적재 대상 없음"으로 조용히 건너뛴다.**
+SCAN_N=$(printf '%s\n' "$PLAN" | sed -n 's/^SCANPLAN|//p' | tail -1)
+case "$SCAN_N" in
+  ''|*[!0-9]*) fail "스캔 계획 결과를 해석하지 못했다. duckdb 출력:
+$PLAN" ;;
+esac
+log "스캔 계획: 아카이브 객체 ${SCAN_N}개"
 
 # ── 2단계: 적재 + 뷰 ──────────────────────────────────────────────────
 if [ "${SCAN_N:-0}" -gt 0 ]; then
@@ -108,25 +127,39 @@ else
   AUDIT_STEP=""
 fi
 
-if [ "${MASTER_N:-0}" -gt 0 ]; then
-  MASTER_STEP=".read $DIR/load/20_load_master.sql"
-else
-  # server 레포에 push-master.sh 가 없어 master/ 가 비는 게 현재의 정상 상태다.
-  # 뷰가 컴파일되려면 테이블은 존재해야 하므로 빈 스텁을 세운다.
-  MASTER_STEP=".read $DIR/load/21_master_stub.sql"
-fi
-
 $DUCKDB <<SQL || fail "SQL 실행 실패"
+.bail on
 $PRELUDE
 SET VARIABLE r2_base = '$R2_BASE';
 ATTACH IF NOT EXISTS '$DB' AS wh;
 $AUDIT_STEP
-$MASTER_STEP
+.read $DIR/load/21_master_stub.sql
 .read $DIR/load/15_load_log.sql
 .read $DIR/views/00_audit.sql
 .read $DIR/views/10_master_join.sql
 .read $DIR/views/20_metrics.sql
 SQL
+
+# ── 마스터 (있으면 덮어쓰고, 없으면 스텁을 남긴다) ────────────────────
+#
+# 존재 여부를 미리 탐지하지 않는다. glob() 은 원격(httpfs)에서 와일드카드가 없으면
+# 존재 확인 없이 경로를 그대로 돌려주기 때문에, 없는 master/LATEST 를 있다고
+# 판정해 버린다. 그냥 시도하고 실패를 흡수하는 편이 저장소 종류에 안 흔들린다.
+#
+# server 레포에 push-master.sh 가 아직 없어 master/ 가 비는 게 현재의 정상 상태다.
+if $DUCKDB <<SQL >/dev/null 2>"$WH_TMP_ERR"
+.bail on
+$PRELUDE
+SET VARIABLE r2_base = '$R2_BASE';
+ATTACH IF NOT EXISTS '$DB' AS wh;
+.read $DIR/load/20_load_master.sql
+.read $DIR/views/10_master_join.sql
+SQL
+then
+  log "마스터 적재됨"
+else
+  log "마스터 미적재 — R2 에 master/ 가 없다 (현재 정상). 스텁 유지"
+fi
 
 # 읽기 전용 조회. duckdb 에 파일을 직접 주면 카탈로그 이름이 파일명이 되므로,
 # SQL 이 기대하는 'wh' 로 맞추려면 여기서도 ATTACH 해야 한다.

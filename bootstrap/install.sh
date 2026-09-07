@@ -52,7 +52,7 @@ chmod 0750 "$LOG_DIR"
 echo "   $WH_DIR (0700), $LOG_DIR (0750), 소유자 $RUN_USER"
 
 say "4/8  R2 자격증명"
-# ⚠️ 미니 PC 용 토큰은 **읽기 전용 + poposafari-analytics 버킷 스코프**로
+# ⚠️ 미니 PC 용 토큰은 **읽기 전용 + poposafari-db-backups 버킷 스코프**로
 #    새로 발급할 것. backup-pg.sh 가 쓰는 쓰기 토큰을 재사용하면 미니 PC 한 대가
 #    prod 백업 버킷 전체의 삭제 권한을 갖게 된다.
 #
@@ -95,11 +95,24 @@ echo "   /etc/logrotate.d/poposafari"
 say "7/8  대시보드 정적 서버"
 # 집계값만 서빙한다 — account_id 조차 나가지 않는다. 그래서 인증을 걸지 않는다.
 # 대신 0.0.0.0 이 아니라 LAN/Tailscale 주소에만 바인드한다.
+# 바인드 주소를 하드코딩하지 않는다. 없는 주소에 바인드하면 파이썬이
+# 'Cannot assign requested address' 로 죽고 Restart=on-failure 가 무한 재시도한다 —
+# 원인이 한눈에 안 보이는 고장이다.
+#   우선순위: DASH_BIND > Tailscale > LAN 첫 주소 > 루프백
+#   0.0.0.0 은 자동으로 고르지 않는다. 페이지에 인증이 없다.
+detect_bind() {
+  local ip
+  ip=$(tailscale ip -4 2>/dev/null | head -1)
+  [ -n "$ip" ] && { echo "$ip"; return; }
+  ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^127\.' | head -1)
+  [ -n "$ip" ] && { echo "$ip"; return; }
+  echo 127.0.0.1
+}
 if [ ! -f /etc/default/poposafari-dashboard ]; then
   cat > /etc/default/poposafari-dashboard <<EOF
 # 대시보드 바인드 주소/포트. 0.0.0.0 으로 열지 말 것 —
 # 페이지에 인증이 없다(집계값만 있다는 전제).
-BIND_ADDR=${DASH_BIND:-172.30.1.13}
+BIND_ADDR=${DASH_BIND:-$(detect_bind)}
 PORT=${DASH_PORT:-8080}
 EOF
   chmod 0644 /etc/default/poposafari-dashboard

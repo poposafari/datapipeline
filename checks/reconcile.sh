@@ -32,7 +32,7 @@ set -euo pipefail
 
 WH_DIR=${WH_DIR:-/srv/warehouse}
 DB=${DB:-$WH_DIR/poposafari.duckdb}
-R2_BASE=${R2_BASE:-r2://poposafari-analytics}
+R2_BASE=${R2_BASE:-r2://poposafari-db-backups}
 DUCKDB=${DUCKDB:-duckdb}
 SECRETS=${SECRETS:-$WH_DIR/secrets.sql}
 SKIP_SECRETS=${SKIP_SECRETS:-0}
@@ -61,12 +61,19 @@ notify() {
 PRELUDE=""
 if [ "$SKIP_SECRETS" != "1" ] && [ "${R2_BASE#r2://}" != "$R2_BASE" ]; then
   [ -f "$SECRETS" ] || { echo "R2 자격증명이 없다: $SECRETS" >&2; exit 2; }
+  # load/run.sh 와 같은 이유. 템플릿 그대로면 엉뚱한 IO Error 로 새어 나간다.
+  if grep -q "<[A-Z0-9_]\+>" "$SECRETS"; then
+    echo "R2 자격증명이 아직 템플릿이다: $SECRETS" >&2
+    echo "  남은 자리표시자: $(grep -o "<[A-Z0-9_]\+>" "$SECRETS" | sort -u | tr "\n" " ")" >&2
+    exit 2
+  fi
   PRELUDE=".read $SECRETS"
 fi
 
 # 대사할 아카이브 객체가 하나도 없으면(첫 배포일) 조용히 통과한다.
 # read_json 은 빈 리스트를 받으면 에러다 — load/05_scan.sql 과 같은 이유로 먼저 센다.
 N_FILES=$($DUCKDB -noheader -list <<SQL
+.bail on
 $PRELUDE
 INSTALL httpfs; LOAD httpfs;
 SELECT count(*) FROM glob('$R2_BASE/audit/*/*/*/*.jsonl.gz')
@@ -81,6 +88,7 @@ if [ "${N_FILES:-0}" -eq 0 ]; then
 fi
 
 OUT=$($DUCKDB -noheader -list <<SQL
+.bail on
 $PRELUDE
 INSTALL httpfs; LOAD httpfs;
 ATTACH '$DB' AS wh (READ_ONLY);

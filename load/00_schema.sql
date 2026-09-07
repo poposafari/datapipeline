@@ -1,7 +1,7 @@
 -- PopoSafari — 웨어하우스 스키마 (멱등)
 --
 -- 호출자(load/run.sh)가 먼저 해두는 것:
---   SET VARIABLE r2_base = 'r2://poposafari-analytics';   -- 또는 로컬 픽스처 경로
+--   SET VARIABLE r2_base = 'r2://poposafari-db-backups';   -- 또는 로컬 픽스처 경로
 --   ATTACH IF NOT EXISTS '<경로>/poposafari.duckdb' AS wh;
 -- ATTACH 는 문자열 리터럴만 받으므로(getvariable 불가) run.sh 가 담당한다.
 --
