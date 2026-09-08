@@ -10,7 +10,7 @@
 #   이게 이 박스에 맞는다. nginx 를 이미 쓰고 있다면 거기에 붙여도 된다.
 #
 # ⚠️ 0.0.0.0 에 바인드하지 않는다. LAN/Tailscale 주소에만 뜬다.
-#    인증은 걸지 않는다 — 페이지에 집계값만 있고 account_id 조차 나가지 않는다.
+#    인증은 걸지 않는다 — account_id를 포함하므로 신뢰할 수 있는 운영자 전용이다.
 #    1인 가정 LAN 이라는 전제가 깨지면(공유기 포트포워딩 등) 이 판단을 다시 할 것.
 Description=PopoSafari dashboard (static)
 After=network-online.target

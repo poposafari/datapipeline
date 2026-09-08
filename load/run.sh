@@ -9,7 +9,7 @@
 # 세고 셸이 2단계 스크립트를 조립한다.
 #
 # 어느 단계든 실패하면 Discord 로 알리고 0이 아닌 코드로 죽는다.
-# 적재 전에 .duckdb 를 하드링크 스냅샷으로 떠 두므로, 적재 중 크래시로 파일이
+# 적재 전에 .duckdb 를 독립 사본으로 떠 두므로, 적재 중 크래시로 파일이
 # 깨져도 즉시 롤백할 수 있다 — R2 전량 재구축(수분~수십분)보다 싸다.
 #
 # 환경변수로 로컬 픽스처를 향하게 할 수 있다 (fixtures/run-local.sh 가 이걸 쓴다):
@@ -26,6 +26,12 @@ SECRETS=${SECRETS:-$WH_DIR/secrets.sql}
 SKIP_SECRETS=${SKIP_SECRETS:-0}
 SKIP_ASSERTIONS=${SKIP_ASSERTIONS:-0}
 HC_LOAD=${HC_LOAD:-}                       # Healthchecks.io UUID (없으면 ping 생략)
+FORCE_RELOAD=${FORCE_RELOAD:-0}
+
+if [ "${WH_LOCKED_DB:-}" != "$DB" ]; then
+  exec python3 "$DIR/load/locked.py" exclusive "$DB" bash "$DIR/load/run.sh" "$@"
+fi
+case "$FORCE_RELOAD" in 0|1) ;; *) echo 'FORCE_RELOAD must be 0 or 1' >&2; exit 2 ;; esac
 
 log() { printf '%s [load] %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
 
@@ -67,11 +73,11 @@ WH_TMP_ERR=$(mktemp)
 trap 'rm -f "$WH_TMP_ERR"' EXIT
 
 # ── 적재 전 스냅샷 ────────────────────────────────────────────────────
-# 하드링크라 디스크를 거의 쓰지 않는다. DuckDB 는 파일을 제자리에서 고치지 않고
-# 새 페이지를 쓰므로, 링크를 걸어두면 이전 상태가 보존된다.
 if [ -f "$DB" ]; then
-  rm -f "$DB.prev"
-  ln "$DB" "$DB.prev" 2>/dev/null || cp "$DB" "$DB.prev"
+  "$DUCKDB" "$DB" -c 'CHECKPOINT;'
+  WH_BACKUP=$(mktemp "${DB}.backup.XXXXXX")
+  cp "$DB" "$WH_BACKUP" || { rm -f "$WH_BACKUP"; fail '백업 복사 실패'; }
+  mv -f "$WH_BACKUP" "$DB.prev"
 fi
 
 # ── 실행 ──────────────────────────────────────────────────────────────
@@ -100,6 +106,8 @@ PLAN=$($DUCKDB -noheader -list <<SQL
 .bail on
 $PRELUDE
 SET VARIABLE r2_base = '$R2_BASE';
+SET TimeZone='UTC';
+SET VARIABLE force_reload = $FORCE_RELOAD = 1;
 ATTACH IF NOT EXISTS '$DB' AS wh;
 .read $DIR/load/00_schema.sql
 .read $DIR/load/05_scan.sql
@@ -132,12 +140,15 @@ $DUCKDB <<SQL || fail "SQL 실행 실패"
 $PRELUDE
 SET VARIABLE r2_base = '$R2_BASE';
 ATTACH IF NOT EXISTS '$DB' AS wh;
+BEGIN TRANSACTION;
+SET VARIABLE force_reload = $FORCE_RELOAD = 1;
 $AUDIT_STEP
 .read $DIR/load/21_master_stub.sql
 .read $DIR/load/15_load_log.sql
 .read $DIR/views/00_audit.sql
 .read $DIR/views/10_master_join.sql
 .read $DIR/views/20_metrics.sql
+COMMIT;
 SQL
 
 # ── 마스터 (있으면 덮어쓰고, 없으면 스텁을 남긴다) ────────────────────

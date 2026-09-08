@@ -12,6 +12,7 @@ set -euo pipefail
 
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORK=${WORK:-$(mktemp -d)}
+mkdir -p "$WORK"
 DUCKDB=${DUCKDB:-duckdb}
 CLEAN=$DIR/fixtures/out
 DIRTY=$DIR/fixtures/out-dirty
@@ -374,3 +375,4 @@ fi
 echo
 printf '통과 %d / 실패 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
+WORK="$WORK" DUCKDB="$DUCKDB" python3 "$DIR/fixtures/optimization_test.py"

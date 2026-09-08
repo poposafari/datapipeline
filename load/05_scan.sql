@@ -23,7 +23,9 @@ SELECT now()::TIMESTAMP AS run_at,
        -- 평소엔 7일. 첫 실행(빈 테이블)이면 서비스 개시일부터 전량.
        CASE WHEN (SELECT count(*) FROM wh.audit) = 0
             THEN DATE '2026-01-01'
-            ELSE current_date - 7 END AS scan_from,
+            ELSE least(current_date - 7,
+                 coalesce((SELECT max(run_at)::DATE - 7 FROM wh.load_log),
+                          DATE '2026-01-01')) END AS scan_from,
        -- 적재 전 행 수. load_log.rows_inserted 를 "이번에 늘어난 수"로 남기려면
        -- 차분이 필요한데, 적재 단계는 건너뛸 수 있으므로 항상 도는 여기서 뜬다.
        (SELECT count(*) FROM wh.audit) AS rows_before;
@@ -47,7 +49,10 @@ FROM (
 -- batch_date 가 안 뽑히는 객체는 계약 밖 경로다. 넣어두면 read_json 이 스키마
 -- 불일치로 죽으므로 여기서 거른다.
 WHERE batch_date IS NOT NULL
-  AND batch_date >= (SELECT scan_from FROM wh.scan_state);
+  AND batch_date >= (SELECT scan_from FROM wh.scan_state)
+  AND (coalesce(getvariable('force_reload'), false)
+       OR (SELECT rows_before FROM wh.scan_state) = 0
+       OR NOT EXISTS (SELECT 1 FROM wh.loaded_objects loaded WHERE loaded.path = file));
 
 -- ── 마스터는 여기서 탐지하지 않는다 ──────────────────────────────────
 -- 예전에는 glob(r2_base || '/master/LATEST') 로 존재 여부를 봤는데, **원격

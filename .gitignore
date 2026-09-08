@@ -2,6 +2,9 @@
 *.duckdb
 *.duckdb.prev
 *.duckdb.wal
+*.duckdb.lock
+*.duckdb.backup.*
+__pycache__/
 *.wal
 
 # R2 자격증명 — 실물은 /srv/warehouse/secrets.sql (0600), 레포 밖

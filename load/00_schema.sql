@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS wh.scan_plan (
   cutoff_id  BIGINT    -- 파일명 끝의 <cutoff> = 그 배치가 가져간 max id
 );
 
+CREATE TABLE IF NOT EXISTS wh.loaded_objects (
+  path VARCHAR PRIMARY KEY,
+  loaded_at TIMESTAMP NOT NULL
+);
+
 -- 소스가 실제로 어떤 컬럼을 담고 있는지의 스냅샷 (05_scan.sql 이 1개 객체로 샘플).
 -- 계약 파기 탐지(checks/contract_drift.sql)와 ip 드롭 자기점검이 이걸 본다.
 -- R2 를 다시 읽지 않으려고 테이블로 남긴다.

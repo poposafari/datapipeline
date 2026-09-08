@@ -69,7 +69,20 @@ FROM (
   --   여기서 떨어뜨리지 않으면 IP 가 웨어하우스에 영구 보존된다.
   ORDER BY id
 ) s
-WHERE NOT EXISTS (SELECT 1 FROM wh.audit a WHERE a.id = s.id);
+WHERE coalesce(getvariable('force_reload'), false)
+   OR NOT EXISTS (SELECT 1 FROM wh.audit a WHERE a.id = s.id)
+ON CONFLICT (id) DO UPDATE SET
+  account_id = excluded.account_id,
+  action = excluded.action,
+  status = excluded.status,
+  detail = excluded.detail,
+  user_agent = excluded.user_agent,
+  source = excluded.source,
+  created_at = excluded.created_at;
+
+INSERT INTO wh.loaded_objects
+SELECT path, (SELECT run_at FROM wh.scan_state) FROM wh.scan_plan
+ON CONFLICT (path) DO UPDATE SET loaded_at = excluded.loaded_at;
 
 -- load_log 기록은 15_load_log.sql 이 한다. 적재 대상이 0개라 이 파일을 건너뛴
 -- 실행도 이력에 남아야 하기 때문이다.

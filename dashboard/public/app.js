@@ -38,10 +38,13 @@ function loadState() {
     if (!raw) return structuredClone(DEFAULTS);
     const saved = JSON.parse(raw);
     return {
-      range: saved.range || DEFAULTS.range,
-      visible: { ...DEFAULTS.visible, ...(saved.visible || {}) },
-      mode: { ...DEFAULTS.mode, ...(saved.mode || {}) },
-      series: saved.series || {},
+      range: [7, 30, 90].includes(saved.range) ? saved.range : DEFAULTS.range,
+      visible: Object.fromEntries(METRICS.map((metric) => [metric,
+        typeof saved.visible?.[metric] === 'boolean' ? saved.visible[metric] : true])),
+      mode: Object.fromEntries(METRICS.map((metric) => [metric,
+        seriesSpec(metric, saved.mode?.[metric]).length ? saved.mode[metric] : DEFAULTS.mode[metric]])),
+      series: Object.fromEntries(Object.entries(saved.series || {}).filter(([key, value]) =>
+        typeof value === 'boolean' && METRICS.some((metric) => key.startsWith(metric + ':')))),
     };
   } catch {
     return structuredClone(DEFAULTS);
@@ -122,7 +125,11 @@ const seriesOn = (metric, key) => state.series[metric + ':' + key] !== false;
 
 function sliceRows(metric) {
   const rows = data[metric] || [];
-  return state.range >= rows.length ? rows : rows.slice(rows.length - state.range);
+  const latest = METRICS.map((name) => data[name]?.at(-1)?.d || '').sort().at(-1);
+  if (!latest) return [];
+  const cutoff = new Date(Date.parse(latest + 'T00:00:00Z') - (state.range - 1) * 86400000)
+    .toISOString().slice(0, 10);
+  return rows.filter((row) => row.d >= cutoff && row.d <= latest);
 }
 
 function renderChart(metric) {
@@ -131,21 +138,23 @@ function renderChart(metric) {
   const box = document.querySelector(`[data-card="${metric}"] .plot`);
   const empty = box.querySelector('.empty');
 
-  charts[metric]?.destroy();
-  charts[metric] = null;
-
   // 값이 하나도 없는 경우와 시리즈를 전부 꺼둔 경우를 구분해서 알려준다.
   // 빈 차트를 그대로 두면 "0인가, 아직 데이터가 없는 건가"를 알 수 없다.
   let msg = null;
   if (!rows.length) msg = '아직 데이터가 없습니다. 적재가 한 번이라도 돌았는지 확인하세요.';
   else if (!spec.length) msg = '표시할 시리즈를 하나 이상 켜세요.';
-  else if (!spec.some((s) => rows.some((r) => r[s.key] !== null && r[s.key] !== 0)))
-    msg = '이 기간에는 해당 이벤트가 없습니다.';
+  else if (!spec.some((series) => rows.some((row) => Number.isFinite(row[series.key]))))
+    msg = '계산할 수 있는 값이 없습니다. 분모가 없는 비율은 0%로 표시하지 않습니다.';
 
   empty.hidden = !msg;
   empty.textContent = msg || '';
   box.querySelector('canvas').style.visibility = msg ? 'hidden' : '';
-  if (msg) return;
+  if (msg) {
+    box.querySelector('canvas').setAttribute('aria-label', msg);
+    return;
+  }
+  box.querySelector('canvas').setAttribute('aria-label',
+    `${TITLES[metric]}, ${rows[0].d}부터 ${rows.at(-1).d}까지. 아래 요약과 표에서 값을 확인하세요.`);
 
   // 퍼센트 표기는 **왼쪽 축에 붙은 시리즈**만 보고 정한다. 보조축(y2)이 있다고
   // 왼쪽 축의 % 를 떼면, 0~40 이 비율인지 개수인지 알 수 없는 눈금이 된다.
@@ -166,6 +175,7 @@ function renderChart(metric) {
       borderWidth: isBar ? 0 : 2,
       pointRadius: 0,
       pointHoverRadius: 4,
+      pointHitRadius: 12,
       tension: 0.25,
       // 값이 없는 날(NULL)은 선을 잇지 않는다. 0으로 이으면 "시도가 없어서
       // 알 수 없음"이 "0%"로 보인다.
@@ -176,17 +186,27 @@ function renderChart(metric) {
     };
   });
 
-  charts[metric] = new Chart(box.querySelector('canvas'), {
+  const config = {
     data: { labels: rows.map((r) => r.d), datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
-      interaction: { mode: 'index', intersect: false },
+      interaction: { mode: currentSnapshot?.drilldown ? 'nearest' : 'index', intersect: false },
+      onClick: (event, elements, chart) => {
+        const point = elements[0];
+        if (!point) return;
+        chart.canvas.tabIndex = -1;
+        UserDetails.open(currentSnapshot, metric, rows[point.index].d,
+          spec[point.datasetIndex].key, spec[point.datasetIndex].label, chart.canvas);
+      },
       plugins: {
         legend: { display: false },   // 시리즈 토글이 범례를 겸한다
         tooltip: {
+          filter: (item, index) => !currentSnapshot?.drilldown || index === 0,
           callbacks: {
+            afterLabel: (context) => UserDetails.preview(currentSnapshot, metric,
+              rows[context.dataIndex].d, spec[context.datasetIndex].key),
             label: (c) => {
               const s = spec[c.datasetIndex];
               if (c.parsed.y === null) return `${c.dataset.label}: —`;
@@ -219,7 +239,15 @@ function renderChart(metric) {
         },
       },
     },
-  });
+  };
+  if (charts[metric]) {
+    charts[metric].data = config.data;
+    charts[metric].options = config.options;
+    charts[metric].update('none');
+    charts[metric].resize();
+  } else {
+    charts[metric] = new Chart(box.querySelector('canvas'), config);
+  }
 }
 
 function renderNote(metric) {
@@ -284,8 +312,9 @@ function renderSeriesToggles(metric) {
     b.onclick = () => {
       state.series[metric + ':' + s.key] = !seriesOn(metric, s.key);
       saveState();
-      renderSeriesToggles(metric);
+      b.setAttribute('aria-pressed', String(seriesOn(metric, s.key)));
       renderChart(metric);
+      renderTable(metric);
     };
     host.appendChild(b);
   }
@@ -297,10 +326,69 @@ function renderCard(metric) {
   document.querySelectorAll(`[data-mode-for="${metric}"] button`).forEach((b) => {
     b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode[metric]));
   });
-  if (card.hidden) { charts[metric]?.destroy(); charts[metric] = null; return; }
+  if (card.hidden) return;
   renderSeriesToggles(metric);
   renderChart(metric);
   renderNote(metric);
+  renderTable(metric);
+}
+
+function renderTable(metric) {
+  const host = document.querySelector(`[data-table-for="${metric}"]`);
+  if (!host.closest('details').open) return;
+  const spec = seriesSpec(metric, state.mode[metric]).filter((series) => seriesOn(metric, series.key));
+  host.replaceChildren();
+  if (!spec.length) return;
+  const table = document.createElement('table');
+  const caption = table.createCaption();
+  caption.textContent = `${TITLES[metric]} 일별 데이터`;
+  const heading = table.createTHead().insertRow();
+  for (const label of ['날짜', ...spec.map((series) => series.label)]) {
+    const cell = document.createElement('th');
+    cell.scope = 'col';
+    cell.textContent = label;
+    heading.appendChild(cell);
+  }
+  const body = table.createTBody();
+  for (const row of sliceRows(metric)) {
+    const record = body.insertRow();
+    record.insertCell().textContent = row.d;
+    for (const series of spec) {
+      const value = row[series.key];
+      const cell = record.insertCell();
+      cell.textContent = value === null ? '—' : series.pct
+        ? (value * 100).toFixed(1) + '%' : number.format(value);
+      if (UserDetails.group(currentSnapshot, metric, row.d, series.key)) {
+        const button = document.createElement('button');
+        button.className = 'user-link';
+        button.textContent = '유저 보기';
+        button.setAttribute('aria-label', `${row.d} ${series.label} 유저 보기`);
+        button.onclick = () => UserDetails.open(currentSnapshot, metric, row.d, series.key, series.label, button);
+        cell.appendChild(button);
+      }
+    }
+  }
+  host.appendChild(table);
+}
+
+const number = new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 1 });
+
+function renderSummary() {
+  const daily = sliceRows('dau');
+  const attempts = sliceRows('catch_rate');
+  const sum = (rows, key) => rows.reduce((total, row) => total + (row[key] || 0), 0);
+  const count = sum(attempts, 'attempts');
+  const values = {
+    dau: daily.length ? number.format(sum(daily, 'dau') / daily.length) : '—',
+    new_users: daily.length ? number.format(sum(daily, 'new_users')) : '—',
+    attempts: attempts.length ? number.format(count) : '—',
+    catch_rate: count ? (sum(attempts, 'caught') / count * 100).toFixed(1) + '%' : '—',
+  };
+  for (const [key, value] of Object.entries(values)) {
+    document.querySelector(`[data-summary="${key}"]`).textContent = value;
+  }
+  document.getElementById('summary-period').textContent = `최근 ${state.range}일 · 한국 시간(KST) · 데이터가 제공된 날짜 기준`;
+  document.getElementById('all-hidden').hidden = METRICS.some((metric) => state.visible[metric]);
 }
 
 function renderAll() {
@@ -311,6 +399,7 @@ function renderAll() {
     b.setAttribute('aria-pressed', String(!!state.visible[b.dataset.metric]));
   });
   METRICS.forEach(renderCard);
+  renderSummary();
 }
 
 function renderMeta(meta, builtAt) {
@@ -324,12 +413,19 @@ function renderMeta(meta, builtAt) {
     : Infinity;
   const stale = ageH > 36;
 
-  el.innerHTML =
-    `<div${stale ? ' class="stale"' : ''}>마지막 적재 ${loaded} UTC`
-    + (stale ? ` (${Math.floor(ageH)}시간 전 — 갱신이 멎었습니다)` : '') + '</div>'
-    + `<div>총 ${Number(meta.total_rows || 0).toLocaleString()}행 · `
-    + `직전 적재 +${Number(meta.last_inserted || 0).toLocaleString()} / 객체 ${meta.last_files || 0}</div>`
-    + (meta.master_pokemon_rows ? '' : '<div>마스터 미적재 (포켓몬 이름 조인 불가)</div>');
+  el.replaceChildren();
+  const lines = [
+    `마지막 적재 ${loaded} UTC` + (stale
+      ? (Number.isFinite(ageH) ? ` (${Math.floor(ageH)}시간 전 · 갱신 지연)` : ' · 아직 적재 기록이 없습니다') : ''),
+    `최근 이벤트 ${meta.latest_event_utc?.slice(0, 16) || '없음'} UTC`,
+    `총 ${number.format(meta.total_rows || 0)}행 · 직전 적재 +${number.format(meta.last_inserted || 0)} / 객체 ${number.format(meta.last_files || 0)}`,
+  ];
+  lines.forEach((line, index) => {
+    const row = document.createElement('div');
+    row.textContent = line;
+    if (index === 0 && stale) row.className = 'stale';
+    el.appendChild(row);
+  });
 
   document.getElementById('built').textContent = builtAt ? `빌드 ${builtAt.trim()}` : '';
 }
@@ -339,9 +435,94 @@ function renderMeta(meta, builtAt) {
 async function getJSON(path) {
   // cache: 'no-store' — 매일 같은 URL 로 내용만 바뀐다. 브라우저 캐시를 믿으면
   // 어제 숫자를 오늘 것으로 착각하게 된다.
-  const r = await fetch(path, { cache: 'no-store' });
-  if (!r.ok) throw new Error(`${path}: ${r.status}`);
-  return r.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(path, { cache: 'no-store', signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+let currentSnapshot = null;
+let refreshTimer = null;
+let refreshing = false;
+
+function validateSnapshot(snapshot) {
+  if (snapshot.schema_version !== 1 || !Number.isFinite(Date.parse(snapshot.built_at))
+      || !Array.isArray(snapshot.meta) || snapshot.meta.length !== 1
+      || typeof snapshot.meta[0] !== 'object' || !snapshot.meta[0]) {
+    throw new Error('지원하지 않는 데이터 형식');
+  }
+  const meta = snapshot.meta[0];
+  for (const key of ['last_load_at', 'latest_event_utc']) {
+    if (meta[key] !== null && (typeof meta[key] !== 'string'
+        || !Number.isFinite(Date.parse(meta[key].replace(' ', 'T') + 'Z')))) {
+      throw new Error('집계 기준 시각 오류');
+    }
+  }
+  for (const key of ['total_rows', 'last_inserted', 'last_files', 'master_pokemon_rows']) {
+    if (meta[key] !== null && (!Number.isInteger(meta[key]) || meta[key] < 0)) {
+      throw new Error('집계 메타데이터 오류');
+    }
+  }
+  if (typeof meta.master_sha !== 'string') throw new Error('집계 메타데이터 오류');
+  for (const metric of METRICS) {
+    const rows = snapshot[metric];
+    const modes = [...document.querySelectorAll(`[data-mode-for="${metric}"] button`)]
+      .map((button) => button.dataset.mode);
+    const keys = new Set(modes.flatMap((mode) => seriesSpec(metric, mode).map((series) => series.key)));
+    const extra = { bait_rock: ['attempts', 'attempts_bait', 'attempts_rock'],
+      dau: [], catch_rate: ['attempts', 'caught_gap'], safari_session: ['closed_sessions', 'sessions'] };
+    extra[metric].forEach((key) => keys.add(key));
+    if (!Array.isArray(rows) || rows.length > 90) throw new Error(`${TITLES[metric]} 데이터 형식 오류`);
+    let previous = '';
+    for (const row of rows) {
+      if (!row || !/^\d{4}-\d{2}-\d{2}$/.test(row.d) || !Number.isFinite(Date.parse(row.d))
+          || new Date(row.d).toISOString().slice(0, 10) !== row.d
+          || (previous && Date.parse(row.d) - Date.parse(previous) !== 86400000)
+          || [...keys].some((key) => row[key] !== null && !Number.isFinite(row[key]))) {
+        throw new Error(`${TITLES[metric]} 데이터 검증 실패`);
+      }
+      previous = row.d;
+    }
+  }
+}
+
+async function refreshSnapshot() {
+  clearTimeout(refreshTimer);
+  if (document.hidden || refreshing) return;
+  refreshing = true;
+  const status = document.getElementById('refresh-status');
+  try {
+    const snapshot = await getJSON('data/snapshot.json');
+    validateSnapshot(snapshot);
+    UserDetails.validate(snapshot);
+    const changed = METRICS.filter((metric) => JSON.stringify(data[metric]) !== JSON.stringify(snapshot[metric])
+      || currentSnapshot?.drilldown?.build_id !== snapshot.drilldown?.build_id);
+    const previousEnd = METRICS.map((metric) => data[metric]?.at(-1)?.d || '').sort().at(-1);
+    METRICS.forEach((metric) => { data[metric] = snapshot[metric]; });
+    const nextEnd = METRICS.map((metric) => data[metric]?.at(-1)?.d || '').sort().at(-1);
+    currentSnapshot = snapshot;
+    renderMeta(snapshot.meta[0], snapshot.built_at);
+    (previousEnd !== nextEnd ? METRICS : changed).forEach(renderCard);
+    if (changed.length) renderSummary();
+    const age = snapshot.meta[0].last_load_at
+      ? Date.now() - Date.parse(snapshot.meta[0].last_load_at.replace(' ', 'T') + 'Z') : Infinity;
+    status.textContent = age > 36 * 3600000 ? '적재 지연 · 마지막 데이터를 표시합니다' : '일일 배치 · 최신 빌드 확인됨';
+    status.dataset.state = age > 36 * 3600000 ? 'warn' : 'ok';
+  } catch (error) {
+    if (!currentSnapshot) document.getElementById('meta').textContent = '집계 기준을 확인할 수 없습니다.';
+    status.textContent = currentSnapshot
+      ? '새 데이터 확인 실패 · 마지막 정상 데이터를 유지합니다'
+      : '데이터를 불러오지 못했습니다. 빌드 상태를 확인하거나 다시 시도하세요.';
+    status.dataset.state = 'error';
+  } finally {
+    refreshing = false;
+    if (!document.hidden) refreshTimer = setTimeout(refreshSnapshot, 60000);
+  }
 }
 
 async function init() {
@@ -354,7 +535,9 @@ async function init() {
     b.onclick = () => {
       state.visible[m] = !state.visible[m];
       saveState();
-      renderAll();
+      b.setAttribute('aria-pressed', String(state.visible[m]));
+      renderCard(m);
+      renderSummary();
     };
     chips.appendChild(b);
   }
@@ -385,21 +568,18 @@ async function init() {
     renderAll();
   };
 
-  try {
-    const [meta, builtAt, ...series] = await Promise.all([
-      getJSON('data/meta.json'),
-      fetch('data/built_at.txt', { cache: 'no-store' }).then((r) => (r.ok ? r.text() : '')),
-      ...METRICS.map((m) => getJSON(`data/${m}.json`)),
-    ]);
-    METRICS.forEach((m, i) => { data[m] = series[i]; });
-    renderMeta(meta[0], builtAt);
-  } catch (e) {
-    document.getElementById('meta').textContent =
-      '데이터를 읽지 못했습니다 — dashboard/build.sh 를 먼저 돌리세요. (' + e.message + ')';
-    METRICS.forEach((m) => { data[m] = []; });
-  }
-
   renderAll();
+  document.getElementById('refresh').onclick = refreshSnapshot;
+  document.querySelectorAll('.data-details').forEach((details) => {
+    details.addEventListener('toggle', () => {
+      if (details.open) renderTable(details.closest('[data-card]').dataset.card);
+    });
+  });
+  document.addEventListener('visibilitychange', () => {
+    clearTimeout(refreshTimer);
+    if (!document.hidden) refreshSnapshot();
+  });
+  await refreshSnapshot();
 }
 
 // 시스템 테마가 바뀌면 차트 색도 따라가야 한다 (CSS 변수에서 읽으므로 다시 그린다).

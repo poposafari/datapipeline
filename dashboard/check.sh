@@ -21,6 +21,36 @@ DATA_DIR=${DATA_DIR:-$PUB/data}
 
 [ -d "$DATA_DIR" ] || { echo "$DATA_DIR 가 없다 — dashboard/build.sh 를 먼저 돌릴 것" >&2; exit 1; }
 
+python3 - "$DIR/dashboard" "$DATA_DIR" <<'PY'
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from contract import FIELDS, validate
+directory = pathlib.Path(sys.argv[2])
+snapshot = json.loads((directory / 'snapshot.json').read_text())
+validate(snapshot)
+for name in ['meta', *FIELDS]:
+    if snapshot[name] != json.loads((directory / f'{name}.json').read_text()):
+        raise SystemExit(f'{name}: snapshot과 호환 JSON 불일치')
+if snapshot.get('drilldown'):
+    for metric, dates in snapshot['drilldown']['metrics'].items():
+        for day, groups in dates.items():
+            payload = json.loads((directory / next(iter(groups.values()))['path']).read_text())
+            assert payload['build_id'] == snapshot['drilldown']['build_id']
+            assert payload['metric'] == metric and payload['date'] == day
+            for key, preview in groups.items():
+                detail = payload['groups'][key]
+                users = detail['users']
+                assert len(users) == preview['total_users']
+                assert len({user['account_id'] for user in users}) == len(users)
+                assert all(set(user) == {'account_id', 'count'} and isinstance(user['account_id'], str)
+                           and type(user['count']) is int and user['count'] > 0 for user in users)
+                assert users == sorted(users, key=lambda user: (-user['count'], int(user['account_id'])))
+                assert users[:10] == preview['preview']
+                assert detail['unidentified_records'] == preview['unidentified_records']
+    print('  ✓ 유저 상세 파일, 정렬, 인원수, 미리보기 일치')
+print('  ✓ 단일 스냅샷 계약 및 호환 JSON 일치')
+PY
+
 # JSON 유효성 + 파일 존재
 python3 - "$DATA_DIR" <<'PY'
 import json, sys, pathlib
@@ -70,6 +100,7 @@ for (const seg of html.matchAll(/data-mode-for="(\w+)"([\s\S]*?)<\/div>/g)) {
 let bad = 0, checked = 0;
 for (const [metric, modes] of Object.entries(MODES)) {
   const rows = JSON.parse(fs.readFileSync(path.join(dataDir, `${metric}.json`), 'utf8'));
+  if (!rows.length) { console.log(`  ✓ ${metric} — 빈 데이터`); continue; }
   const cols = new Set(Object.keys(rows[0] || {}));
   for (const mode of modes) {
     const spec = seriesSpec(metric, mode);

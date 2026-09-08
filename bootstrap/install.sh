@@ -93,7 +93,7 @@ EOF
 echo "   /etc/logrotate.d/poposafari"
 
 say "7/8  대시보드 정적 서버"
-# 집계값만 서빙한다 — account_id 조차 나가지 않는다. 그래서 인증을 걸지 않는다.
+# 집계값과 account_id 상세를 서빙한다. LAN/Tailscale의 신뢰할 수 있는 운영자 전용이다.
 # 대신 0.0.0.0 이 아니라 LAN/Tailscale 주소에만 바인드한다.
 # 바인드 주소를 하드코딩하지 않는다. 없는 주소에 바인드하면 파이썬이
 # 'Cannot assign requested address' 로 죽고 Restart=on-failure 가 무한 재시도한다 —
@@ -111,7 +111,7 @@ detect_bind() {
 if [ ! -f /etc/default/poposafari-dashboard ]; then
   cat > /etc/default/poposafari-dashboard <<EOF
 # 대시보드 바인드 주소/포트. 0.0.0.0 으로 열지 말 것 —
-# 페이지에 인증이 없다(집계값만 있다는 전제).
+# 페이지에 인증이 없으며 account_id를 포함한다. 신뢰할 수 있는 운영자만 접근할 것.
 BIND_ADDR=${DASH_BIND:-$(detect_bind)}
 PORT=${DASH_PORT:-8080}
 EOF

@@ -39,6 +39,11 @@ SKIP_SECRETS=${SKIP_SECRETS:-0}
 WINDOW_DAYS=${WINDOW_DAYS:-14}      # 대사 창(아카이브일 기준)
 GAP_THRESHOLD=${GAP_THRESHOLD:-1000}
 
+DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [ "${WH_LOCKED_DB:-}" != "$DB" ]; then
+  exec python3 "$DIR/load/locked.py" shared "$DB" bash "$DIR/checks/reconcile.sh" "$@"
+fi
+
 notify() {
   [ -n "${DISCORD_WEBHOOK_ALERTS:-}" ] || return 0
   local payload resp_body code
@@ -72,15 +77,19 @@ fi
 
 # 대사할 아카이브 객체가 하나도 없으면(첫 배포일) 조용히 통과한다.
 # read_json 은 빈 리스트를 받으면 에러다 — load/05_scan.sql 과 같은 이유로 먼저 센다.
-N_FILES=$($DUCKDB -noheader -list <<SQL
+FILE_RESULT=$($DUCKDB -noheader -list <<SQL
 .bail on
 $PRELUDE
 INSTALL httpfs; LOAD httpfs;
-SELECT count(*) FROM glob('$R2_BASE/audit/*/*/*/*.jsonl.gz')
+SET TimeZone='UTC';
+SELECT 'FILECOUNT|' || count(*) FROM glob('$R2_BASE/audit/*/*/*/*.jsonl.gz')
 WHERE TRY_CAST(replace(regexp_extract(file, 'audit/(\d{4}/\d{2}/\d{2})/', 1), '/', '-') AS DATE)
       >= current_date - $WINDOW_DAYS;
 SQL
 ) || { echo "아카이브 목록 조회 실패: $R2_BASE" >&2; exit 2; }
+
+N_FILES=$(printf '%s\n' "$FILE_RESULT" | sed -n 's/^FILECOUNT|//p' | tail -1)
+case "$N_FILES" in ''|*[!0-9]*) echo '아카이브 객체 수 해석 실패' >&2; exit 2 ;; esac
 
 if [ "${N_FILES:-0}" -eq 0 ]; then
   echo "$(date -u +%FT%TZ) [reconcile] 통과 — 창 안에 아카이브 객체가 없다"
@@ -92,6 +101,7 @@ OUT=$($DUCKDB -noheader -list <<SQL
 $PRELUDE
 INSTALL httpfs; LOAD httpfs;
 ATTACH '$DB' AS wh (READ_ONLY);
+SET TimeZone='UTC';
 USE wh;
 
 SET VARIABLE files = (
@@ -136,7 +146,7 @@ if [ -n "$MISSING" ]; then
 
 ■ 아카이브에 있는데 웨어하우스에 없다 — **적재 유실**
 $(printf '%s\n' "$MISSING" | sed 's/^MISSING|/  누락 /; s/|/행, id /')
-  조치: load/run.sh 를 다시 돌리면 안티조인이 메운다.
+  조치: FORCE_RELOAD=1 ./load/run.sh 로 처리 완료 객체도 다시 읽는다.
         그래도 남으면 scan_from 이 그 날짜를 덮는지 확인할 것."
 fi
 
